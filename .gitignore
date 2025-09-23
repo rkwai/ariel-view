@@ -1,0 +1,32 @@
+# Node / JavaScript dependencies and logs
+node_modules/
+bower_components/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output / caches
+dist/
+.vite/
+build/
+coverage/
+.tmp/
+.temp/
+
+# Environment files
+.env
+.env.*.local
+
+# Editor & OS artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sw?
+
+# Sass cache
+.sass-cache/
+
+# TypeScript incremental build info
+*.tsbuildinfo
