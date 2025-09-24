@@ -13,6 +13,11 @@ type ViewBoxState = {
   height: number;
 };
 
+type PointerPosition = {
+  x: number;
+  y: number;
+};
+
 const DEFAULT_DIAGRAM = `%% Sample flowchart
 flowchart TD
   Start((Start)) --> Decide{Ready?}
@@ -169,6 +174,38 @@ template.innerHTML = `
       color: var(--status-muted);
     }
 
+    .mobile-toggle {
+      display: none;
+      width: 100%;
+      margin-top: clamp(0.5rem, 1.2vw, 0.85rem);
+      gap: clamp(0.4rem, 1vw, 0.75rem);
+    }
+
+    .mobile-toggle button {
+      flex: 1;
+      border: 1px solid rgba(123, 192, 255, 0.35);
+      background: rgba(9, 20, 35, 0.18);
+      color: inherit;
+      border-radius: 999px;
+      padding: 0.45rem 0.9rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+    }
+
+    .mobile-toggle button.is-active {
+      background: rgba(123, 192, 255, 0.95);
+      color: #0b1120;
+      border-color: rgba(123, 192, 255, 0.95);
+    }
+
+    .mobile-toggle button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
     .panes {
       flex: 1;
       min-height: 0;
@@ -186,6 +223,7 @@ template.innerHTML = `
       flex-direction: column;
       min-width: 0;
       min-height: 0;
+      box-sizing: border-box;
     }
 
     .pane-editor,
@@ -196,11 +234,13 @@ template.innerHTML = `
     .pane-editor {
       padding: clamp(0.5rem, 1vw, 0.8rem);
       background: transparent;
+      box-sizing: border-box;
     }
 
     .pane-preview {
       padding: clamp(0.5rem, 1vw, 0.8rem);
       background: transparent;
+      box-sizing: border-box;
     }
 
     .pane-preview > * {
@@ -245,6 +285,7 @@ template.innerHTML = `
       resize: none;
       box-shadow: inset 0 0 0 1px rgba(123, 192, 255, 0.25);
       transition: border 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+      box-sizing: border-box;
     }
 
     :host([data-theme='light']) textarea {
@@ -274,6 +315,7 @@ template.innerHTML = `
       border-radius: 0.75rem;
       padding: 0;
       overflow: hidden;
+      box-sizing: border-box;
     }
 
     .preview-stage {
@@ -370,6 +412,44 @@ template.innerHTML = `
       display: none;
     }
 
+    @media (max-width: 900px) {
+      header {
+        align-items: flex-start;
+        gap: clamp(0.4rem, 2vw, 1rem);
+        flex-direction: column;
+      }
+
+      .toolbar {
+        width: 100%;
+        justify-content: flex-start;
+        gap: clamp(0.4rem, 1.2vw, 0.8rem);
+      }
+
+      .mobile-toggle {
+        display: inline-flex;
+      }
+
+      .panes {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr;
+        row-gap: clamp(0.75rem, 3vw, 1.25rem);
+        column-gap: 0;
+      }
+
+      :host([data-mobile-pane='edit']) .pane-preview {
+        display: none;
+      }
+
+      :host([data-mobile-pane='view']) .pane-editor {
+        display: none;
+      }
+
+      :host([data-mobile='true']) main {
+        height: auto;
+        min-height: 100vh;
+      }
+    }
+
   </style>
   <main>
     <header>
@@ -381,6 +461,10 @@ template.innerHTML = `
         <button type="button" data-action="download-svg" disabled>Download SVG</button>
         <button type="button" data-action="toggle-theme">Switch to light theme</button>
         <span class="toolbar-status" aria-live="polite"></span>
+      </div>
+      <div class="mobile-toggle" role="tablist" aria-label="Toggle editor or preview">
+        <button type="button" data-pane="edit" aria-pressed="false">Edit</button>
+        <button type="button" data-pane="view" aria-pressed="false" class="is-active">View</button>
       </div>
     </header>
     <section class="panes">
@@ -427,6 +511,11 @@ export class ArielViewApp extends HTMLElement {
   private errorBox!: HTMLDivElement;
   private errorMessage!: HTMLPreElement;
   private errorTip!: HTMLParagraphElement;
+  private mobileToggleButtons: HTMLButtonElement[] = [];
+  private isMobile = false;
+  private mobilePane: 'edit' | 'view' = 'view';
+  private mediaQuery?: MediaQueryList;
+
   private renderHandle: number | null = null;
   private lastRender: MermaidRenderResult | null = null;
   private theme: ThemeMode = INITIAL_THEME;
@@ -442,6 +531,12 @@ export class ArielViewApp extends HTMLElement {
   private activePointerId: number | null = null;
   private pointerStartX = 0;
   private pointerStartY = 0;
+
+  private pointerPositions: Map<number, PointerPosition> = new Map();
+  private isPinching = false;
+  private initialPinchDistance = 0;
+  private pinchStartViewBox: ViewBoxState | null = null;
+  private pinchStartWidth = 0;
 
   constructor() {
     super();
@@ -460,12 +555,21 @@ export class ArielViewApp extends HTMLElement {
     this.errorMessage = shadow.querySelector('.error-message') as HTMLPreElement;
     this.errorTip = shadow.querySelector('.error-tip') as HTMLParagraphElement;
 
+    this.mobileToggleButtons = Array.from(shadow.querySelectorAll('.mobile-toggle button')) as HTMLButtonElement[];
+    this.mobileToggleButtons.forEach((button) => button.addEventListener('click', this.onMobileToggleClick));
+
     this.textarea.value = DEFAULT_DIAGRAM.trim();
     this.textarea.addEventListener('input', this.onInput);
 
     const toolbar = shadow.querySelector('.toolbar');
     toolbar?.addEventListener('click', this.onToolbarClick);
 
+    if (typeof window !== 'undefined' && 'matchMedia' in window) {
+      this.mediaQuery = window.matchMedia('(max-width: 900px)');
+      this.isMobile = this.mediaQuery.matches;
+      this.mediaQuery.addEventListener('change', this.onMediaQueryChange);
+    }
+    this.applyMobileState();
 
     this.previewStage.addEventListener('wheel', this.onStageWheel, { passive: false });
     this.previewStage.addEventListener('pointerdown', this.onStagePointerDown);
@@ -492,6 +596,13 @@ export class ArielViewApp extends HTMLElement {
     const toolbar = this.shadowRoot?.querySelector('.toolbar');
     toolbar?.removeEventListener('click', this.onToolbarClick);
 
+    this.mobileToggleButtons.forEach((button) => button.removeEventListener('click', this.onMobileToggleClick));
+    this.mediaQuery?.removeEventListener('change', this.onMediaQueryChange);
+    this.pointerPositions.clear();
+    this.isPinching = false;
+    this.initialPinchDistance = 0;
+    this.pinchStartViewBox = null;
+    this.pinchStartWidth = 0;
 
     this.previewStage.removeEventListener('wheel', this.onStageWheel);
     this.previewStage.removeEventListener('pointerdown', this.onStagePointerDown);
@@ -589,6 +700,15 @@ export class ArielViewApp extends HTMLElement {
         this.resetView(true);
       }
 
+      this.isPanning = false;
+      this.activePointerId = null;
+      this.panStartViewBox = null;
+      this.pointerPositions.clear();
+      this.isPinching = false;
+      this.initialPinchDistance = 0;
+      this.pinchStartViewBox = null;
+      this.previewStage.classList.remove('is-panning');
+
       this.clearError();
       this.lastRender = result;
       this.setToolbarState(true);
@@ -605,6 +725,14 @@ export class ArielViewApp extends HTMLElement {
       this.previewStage.hidden = true;
       this.placeholder.hidden = true;
       this.lastRender = null;
+      this.pointerPositions.clear();
+      this.isPanning = false;
+      this.isPinching = false;
+      this.activePointerId = null;
+      this.panStartViewBox = null;
+      this.initialPinchDistance = 0;
+      this.pinchStartViewBox = null;
+      this.previewStage.classList.remove('is-panning');
       this.setToolbarState(false);
       this.setToolbarStatus('Render error');
       this.showError(message);
@@ -619,6 +747,13 @@ export class ArielViewApp extends HTMLElement {
     this.initialViewBox = null;
     this.viewBox = null;
     this.panStartViewBox = null;
+    this.pointerPositions.clear();
+    this.isPanning = false;
+    this.activePointerId = null;
+    this.isPinching = false;
+    this.initialPinchDistance = 0;
+    this.pinchStartViewBox = null;
+    this.previewStage.classList.remove('is-panning');
   }
 
   private initializeSvgViewport(): void {
@@ -632,7 +767,7 @@ export class ArielViewApp extends HTMLElement {
     this.initialViewBox = { ...viewBox };
     this.viewBox = { ...viewBox };
     this.minZoomWidth = viewBox.width / 16;
-    this.maxZoomWidth = viewBox.width * 6;
+    this.maxZoomWidth = viewBox.width * 16;
 
     if (!this.currentSvg.getAttribute('preserveAspectRatio')) {
       this.currentSvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
@@ -787,24 +922,195 @@ export class ArielViewApp extends HTMLElement {
     });
   }
 
-  private onStageWheel = (event: WheelEvent): void => {
-    if (!this.viewBox || !this.initialViewBox || this.previewStage.hidden) {
+  private onMobileToggleClick = (event: Event): void => {
+    if (!this.isMobile) {
       return;
     }
 
-    event.preventDefault();
+    const button = event.currentTarget as HTMLButtonElement | null;
+    const pane = (button?.dataset.pane as 'edit' | 'view' | undefined) ?? 'view';
 
-    const scale = event.deltaY < 0 ? 1 / 1.15 : 1.15;
-    let newWidth = this.viewBox.width * scale;
-    newWidth = this.clamp(newWidth, this.minZoomWidth || this.viewBox.width / 16, this.maxZoomWidth || this.viewBox.width * 6);
-    const factor = newWidth / this.viewBox.width;
-    const newHeight = this.viewBox.height * factor;
+    if (pane === this.mobilePane) {
+      return;
+    }
 
-    const centerX = this.viewBox.x + this.viewBox.width / 2;
-    const centerY = this.viewBox.y + this.viewBox.height / 2;
+    this.mobilePane = pane;
+    this.updateMobileToggle();
+    this.setAttribute('data-mobile-pane', pane);
+  };
 
-    let newX = centerX - newWidth / 2;
-    let newY = centerY - newHeight / 2;
+  private onMediaQueryChange = (event: MediaQueryListEvent): void => {
+    this.isMobile = event.matches;
+    if (!this.isMobile) {
+      this.mobilePane = 'view';
+    }
+    this.applyMobileState();
+  };
+
+  private applyMobileState(): void {
+    if (this.isMobile) {
+      this.setAttribute('data-mobile', 'true');
+      this.setAttribute('data-mobile-pane', this.mobilePane);
+    } else {
+      this.removeAttribute('data-mobile');
+      this.removeAttribute('data-mobile-pane');
+    }
+    this.updateMobileToggle();
+  }
+
+  private updateMobileToggle(): void {
+    if (!this.mobileToggleButtons.length) {
+      return;
+    }
+
+    this.mobileToggleButtons.forEach((button) => {
+      const pane = button.dataset.pane as 'edit' | 'view' | undefined;
+      const isActive = this.isMobile && pane === this.mobilePane;
+      button.classList.toggle('is-active', isActive);
+      button.setAttribute('aria-pressed', String(isActive));
+      button.disabled = !this.isMobile;
+    });
+  }
+
+  private recordPointer(event: PointerEvent): void {
+    this.pointerPositions.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  }
+
+  private updatePointerPosition(event: PointerEvent): void {
+    if (!this.pointerPositions.has(event.pointerId)) {
+      return;
+    }
+    this.pointerPositions.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  }
+
+  private removePointer(pointerId: number): void {
+    this.pointerPositions.delete(pointerId);
+  }
+
+  private startPinch(): void {
+    if (!this.viewBox || !this.initialViewBox) {
+      return;
+    }
+
+    if (this.pointerPositions.size < 2) {
+      return;
+    }
+
+    const pair = this.getPointerPair();
+    if (!pair) {
+      return;
+    }
+
+    this.isPinching = true;
+    this.isPanning = false;
+    this.activePointerId = null;
+    this.panStartViewBox = null;
+    this.previewStage.classList.remove('is-panning');
+    this.pinchStartViewBox = { ...this.viewBox };
+    this.pinchStartWidth = this.viewBox.width;
+    this.initialPinchDistance = this.computeDistance(pair[0], pair[1]) || 1;
+  }
+
+  private endPinch(): void {
+    this.isPinching = false;
+    this.initialPinchDistance = 0;
+    this.pinchStartViewBox = null;
+    this.pinchStartWidth = 0;
+
+    if (this.pointerPositions.size === 1 && this.viewBox) {
+      const iterator = this.pointerPositions.entries();
+      const nextValue = iterator.next();
+      if (!nextValue.done) {
+        const [pointerId, position] = nextValue.value as [number, PointerPosition];
+        this.isPanning = true;
+        this.activePointerId = pointerId;
+        this.pointerStartX = position.x;
+        this.pointerStartY = position.y;
+        this.panStartViewBox = { ...this.viewBox };
+        this.previewStage.classList.add('is-panning');
+        return;
+      }
+    }
+
+    this.isPanning = false;
+    this.activePointerId = null;
+    this.panStartViewBox = null;
+    this.previewStage.classList.remove('is-panning');
+  }
+
+  private handlePinchGesture(): void {
+    if (!this.isPinching || !this.pinchStartViewBox || !this.initialViewBox) {
+      return;
+    }
+
+    const pair = this.getPointerPair();
+    if (!pair) {
+      return;
+    }
+
+    const [a, b] = pair;
+    const stageRect = this.previewStage.getBoundingClientRect();
+    if (stageRect.width === 0 || stageRect.height === 0) {
+      return;
+    }
+
+    const currentDistance = this.computeDistance(a, b);
+    if (!currentDistance) {
+      return;
+    }
+
+    const distanceRatio = currentDistance / (this.initialPinchDistance || 1);
+    if (!isFinite(distanceRatio) || distanceRatio === 0) {
+      return;
+    }
+
+    const targetWidth = this.pinchStartWidth / distanceRatio;
+    const relX = this.clamp((((a.x + b.x) / 2) - stageRect.left) / stageRect.width, 0, 1);
+    const relY = this.clamp((((a.y + b.y) / 2) - stageRect.top) / stageRect.height, 0, 1);
+
+    this.applyZoom(targetWidth, relX, relY);
+  }
+
+  private getPointerPair(): [PointerPosition, PointerPosition] | null {
+    if (this.pointerPositions.size < 2) {
+      return null;
+    }
+    const iterator = this.pointerPositions.values();
+    const first = iterator.next().value as PointerPosition | undefined;
+    const second = iterator.next().value as PointerPosition | undefined;
+    if (!first || !second) {
+      return null;
+    }
+    return [first, second];
+  }
+
+  private computeDistance(a: PointerPosition, b: PointerPosition): number {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  private applyZoom(targetWidth: number, focusRelX = 0.5, focusRelY = 0.5): void {
+    if (!this.viewBox || !this.initialViewBox) {
+      return;
+    }
+
+    const minWidth = this.minZoomWidth || this.initialViewBox.width / 16;
+    const maxWidth = this.maxZoomWidth || this.initialViewBox.width * 16;
+    let width = this.clamp(targetWidth, minWidth, maxWidth);
+
+    if (width <= minWidth * 1.0005) {
+      this.updateViewBox({ ...this.initialViewBox });
+      return;
+    }
+
+    const current = this.viewBox;
+    const height = width * (current.height / current.width);
+    const relX = this.clamp(focusRelX, 0, 1);
+    const relY = this.clamp(focusRelY, 0, 1);
+    const focusX = current.x + relX * current.width;
+    const focusY = current.y + relY * current.height;
+
+    let newX = focusX - relX * width;
+    let newY = focusY - relY * height;
 
     const bounds = this.initialViewBox;
     const minX = bounds.x - bounds.width;
@@ -818,26 +1124,68 @@ export class ArielViewApp extends HTMLElement {
     this.updateViewBox({
       x: newX,
       y: newY,
-      width: newWidth,
-      height: newHeight
+      width,
+      height
     });
-  };
+  }
 
-  private onStagePointerDown = (event: PointerEvent): void => {
-    if (!this.viewBox || event.button !== 0) {
+  private onStageWheel = (event: WheelEvent): void => {
+    if (!this.viewBox || !this.initialViewBox || this.previewStage.hidden) {
       return;
     }
 
-    this.previewStage.setPointerCapture(event.pointerId);
+    event.preventDefault();
+
+    const stageRect = this.previewStage.getBoundingClientRect();
+    const relX = stageRect.width > 0 ? (event.clientX - stageRect.left) / stageRect.width : 0.5;
+    const relY = stageRect.height > 0 ? (event.clientY - stageRect.top) / stageRect.height : 0.5;
+    const scale = event.deltaY < 0 ? 1 / 1.15 : 1.15;
+
+    this.applyZoom(this.viewBox.width * scale, relX, relY);
+  };
+
+  private onStagePointerDown = (event: PointerEvent): void => {
+    if (!this.viewBox) {
+      return;
+    }
+
+    this.recordPointer(event);
+
+    try {
+      this.previewStage.setPointerCapture(event.pointerId);
+    } catch (error) {
+      /* ignore capture issues */
+    }
+
+    if (this.pointerPositions.size >= 2) {
+      this.startPinch();
+      return;
+    }
+
+    if (event.pointerType === 'mouse' && event.button !== 0) {
+      return;
+    }
+
+    if (this.isPinching) {
+      return;
+    }
+
     this.isPanning = true;
     this.activePointerId = event.pointerId;
     this.pointerStartX = event.clientX;
     this.pointerStartY = event.clientY;
-    this.panStartViewBox = { ...this.viewBox };
+    this.panStartViewBox = this.viewBox ? { ...this.viewBox } : null;
     this.previewStage.classList.add('is-panning');
   };
 
   private onStagePointerMove = (event: PointerEvent): void => {
+    this.updatePointerPosition(event);
+
+    if (this.isPinching) {
+      this.handlePinchGesture();
+      return;
+    }
+
     if (!this.isPanning || this.activePointerId !== event.pointerId || !this.panStartViewBox) {
       return;
     }
@@ -874,14 +1222,32 @@ export class ArielViewApp extends HTMLElement {
   };
 
   private onStagePointerUp = (event: PointerEvent): void => {
-    if (this.activePointerId !== event.pointerId) {
-      return;
+    this.removePointer(event.pointerId);
+
+    try {
+      this.previewStage.releasePointerCapture(event.pointerId);
+    } catch (error) {
+      /* ignore release issues */
     }
 
-    this.isPanning = false;
-    this.activePointerId = null;
-    this.panStartViewBox = null;
-    this.previewStage.classList.remove('is-panning');
+    if (this.isPinching) {
+      if (this.pointerPositions.size < 2) {
+        this.endPinch();
+      } else {
+        const pair = this.getPointerPair();
+        if (pair) {
+          this.initialPinchDistance = this.computeDistance(pair[0], pair[1]) || this.initialPinchDistance;
+          this.pinchStartViewBox = this.viewBox ? { ...this.viewBox } : null;
+        }
+      }
+    }
+
+    if (this.activePointerId === event.pointerId) {
+      this.isPanning = false;
+      this.activePointerId = null;
+      this.panStartViewBox = null;
+      this.previewStage.classList.remove('is-panning');
+    }
   };
 
   private onStageDoubleClick = (): void => {

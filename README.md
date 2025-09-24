@@ -36,7 +36,7 @@ The `dist/` folder contains self-contained static assets ready for CDNs or stati
 ## Usage
 
 1. Paste or write Mermaid syntax in the editor on the left.
-2. The layout locks the editor at 25% width and the preview at 75%; use the mouse wheel/touchpad to zoom and click-drag the preview to pan.
+2. The layout locks the editor at 25% width and the preview at 75%; use the mouse wheel/touchpad to zoom and click-drag to pan, or on mobile use the Edit/View toggle and pinch-to-zoom gestures.
 3. The toolbar lets you copy SVG markup, download the asset, toggle themes, or auto-fix common bracket/quote mistakes when they occur.
 
 Sample snippet:
